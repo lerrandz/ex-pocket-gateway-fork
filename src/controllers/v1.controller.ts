@@ -7,12 +7,13 @@ import {
   BlockchainsRepository,
   LoadBalancersRepository,
 } from '../repositories';
-import {Pocket, Configuration} from '@pokt-network/pocket-js';
+import {Pocket, Configuration, HTTPMethod} from '@pokt-network/pocket-js';
 import {Redis} from 'ioredis';
 import {Pool as PGPool} from 'pg';
 import {CherryPicker} from '../services/cherry-picker';
 import {MetricsRecorder} from '../services/metrics-recorder';
 import {PocketRelayer} from '../services/pocket-relayer';
+import {SyncChecker} from '../services/sync-checker';
 
 const logger = require('../services/logger');
 
@@ -20,6 +21,7 @@ export class V1Controller {
   cherryPicker: CherryPicker;
   metricsRecorder: MetricsRecorder;
   pocketRelayer: PocketRelayer;
+  syncChecker: SyncChecker;
 
   constructor(
     @inject('secretKey') private secretKey: string,
@@ -27,6 +29,7 @@ export class V1Controller {
     @inject('origin') private origin: string,
     @inject('userAgent') private userAgent: string,
     @inject('contentType') private contentType: string,
+    @inject('httpMethod') private httpMethod: HTTPMethod,
     @inject('relayPath') private relayPath: string,
     @inject('relayRetries') private relayRetries: number,
     @inject('pocketInstance') private pocket: Pocket,
@@ -54,6 +57,7 @@ export class V1Controller {
       cherryPicker: this.cherryPicker,
       processUID: this.processUID,
     });
+    this.syncChecker = new SyncChecker(this.redis, this.metricsRecorder);
     this.pocketRelayer = new PocketRelayer({
       host: this.host,
       origin: this.origin,
@@ -62,6 +66,7 @@ export class V1Controller {
       pocketConfiguration: this.pocketConfiguration,
       cherryPicker: this.cherryPicker,
       metricsRecorder: this.metricsRecorder,
+      syncChecker: this.syncChecker,
       redis: this.redis,
       databaseEncryptionKey: this.databaseEncryptionKey,
       secretKey: this.secretKey,
@@ -118,7 +123,7 @@ export class V1Controller {
       const loadBalancer = await this.fetchLoadBalancer(id, filter);
       if (loadBalancer?.id) {
         // eslint-disable-next-line 
-        const [blockchain, _] = await this.pocketRelayer.loadBlockchain();
+        const [blockchain, _enforceResult, _syncCheck] = await this.pocketRelayer.loadBlockchain();
         // Fetch applications contained in this Load Balancer. Verify they exist and choose
         // one randomly for the relay.
         const application = await this.fetchLoadBalancerApplication(
@@ -128,7 +133,7 @@ export class V1Controller {
           filter,
         );
         if (application?.id) {
-          return this.pocketRelayer.sendRelay(rawData, this.relayPath, application, this.requestID, parseInt(loadBalancer.requestTimeOut), parseInt(loadBalancer.overallTimeOut), parseInt(loadBalancer.relayRetries));
+          return this.pocketRelayer.sendRelay(rawData, this.relayPath, this.httpMethod, application, this.requestID, parseInt(loadBalancer.requestTimeOut), parseInt(loadBalancer.overallTimeOut), parseInt(loadBalancer.relayRetries));
         }
       }
     } catch (e) {
@@ -188,7 +193,7 @@ export class V1Controller {
     try {
       const application = await this.fetchApplication(id, filter);
       if (application?.id) {
-        return this.pocketRelayer.sendRelay(rawData, this.relayPath, application, this.requestID);
+        return this.pocketRelayer.sendRelay(rawData, this.relayPath, this.httpMethod, application, this.requestID);
       }
     } catch (e) {
       logger.log('error', 'Application not found', {requestID: this.requestID, relayType: 'APP', typeID: id, serviceNode: ''});
