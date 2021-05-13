@@ -8,6 +8,7 @@ export declare class Blockchains extends Entity {
     index: number;
     blockchain: string;
     active: boolean;
+    syncCheck?: string;
     [prop: string]: any;
     constructor(data?: Partial<Blockchains>);
 }
