@@ -1,9 +1,13 @@
 import {HttpErrors} from '@loopback/rest';
 
-require("dotenv").config();
+require('dotenv').config();
 
-const { createLogger, format, transports } = require('winston');
-const { printf } = format;
+const {
+  createLogger,
+  format,
+  transports: winstonTransports,
+} = require('winston');
+const {printf} = format;
 const S3StreamLogger = require('s3-streamlogger').S3StreamLogger;
 
 const s3AccessKeyID: string = process.env.AWS_S3_ACCESS_KEY_ID ?? '';
@@ -11,6 +15,7 @@ const s3SecretAccessKey: string = process.env.AWS_S3_SECRET_ACCESS_KEY ?? '';
 const s3LogsRegion: string = process.env.AWS_S3_LOGS_REGION ?? '';
 const s3LogsBucket: string = process.env.AWS_S3_LOGS_BUCKET ?? '';
 const s3LogsFolder: string = process.env.AWS_S3_LOGS_FOLDER ?? '';
+const environment: string = process.env.NODE_ENV ?? 'production';
 
 if (!s3AccessKeyID) {
   throw new HttpErrors.InternalServerError(
@@ -35,7 +40,7 @@ if (!s3LogsFolder) {
 
 const s3StreamInfo = generateS3Logger('/info');
 const s3StreamError = generateS3Logger('/error');
-const s3StreamDebug =  generateS3Logger('/debug');
+const s3StreamDebug = generateS3Logger('/debug');
 
 const timestampUTC = () => {
   const timestamp = new Date();
@@ -45,31 +50,34 @@ const timestampUTC = () => {
 class TimestampFirst {
   enabled: boolean;
   constructor(enabled = true) {
-      this.enabled = enabled;
+    this.enabled = enabled;
   }
-  transform(obj: { timestamp: string; }) {
-      if (this.enabled) {
-          return Object.assign({
-              timestamp: obj.timestamp
-          }, obj);
-      }
-      return obj;
+  transform(obj: {timestamp: string}) {
+    if (this.enabled) {
+      return Object.assign(
+        {
+          timestamp: obj.timestamp,
+        },
+        obj,
+      );
+    }
+    return obj;
   }
 }
 
 var jsonFormat = format.combine(
   format.timestamp({
-      format: 'YYYY-MM-DD HH:mm:ss.SSS'
+    format: 'YYYY-MM-DD HH:mm:ss.SSS',
   }),
   new TimestampFirst(true),
-  format.json()
+  format.json(),
 );
 
 const consoleFormat = printf(({ level, message, requestID, relayType, typeID, serviceNode, error, elapsedTime }: Log) => {
   return `[${timestampUTC()}] [${level}] [${requestID}] [${relayType}] [${typeID}] [${serviceNode}] [${error}] [${elapsedTime}] ${message}`;
 });
 
-const debugFilter = format((log:Log, opts:any) => {
+const debugFilter = format((log: Log, opts: any) => {
   return log.level === 'debug' ? log : false;
 });
 
@@ -92,32 +100,25 @@ const options = {
     handleExceptions: true,
     colorize: false,
     stream: s3StreamInfo,
-    format: format.combine(
-      jsonFormat,
-    ),
+    format: format.combine(jsonFormat),
   },
   s3Error: {
     level: 'error',
     handleExceptions: true,
     colorize: false,
     stream: s3StreamError,
-    format: format.combine(
-      jsonFormat,
-    ),
+    format: format.combine(jsonFormat),
   },
   s3Debug: {
     level: 'debug',
     handleExceptions: true,
     colorize: false,
     stream: s3StreamDebug,
-    format: format.combine(
-      debugFilter(),
-      jsonFormat,
-    ),
+    format: format.combine(debugFilter(), jsonFormat),
   },
 };
 
-function generateS3Logger(folder:string): any {
+function generateS3Logger(folder: string): any {
   const s3StreamLogger = new S3StreamLogger({
     bucket: s3LogsBucket,
     folder: s3LogsFolder + folder,
@@ -127,8 +128,8 @@ function generateS3Logger(folder:string): any {
     // eslint-disable-next-line @typescript-eslint/camelcase
     secret_access_key: s3SecretAccessKey,
   });
-  
-  s3StreamLogger.on('error', function(err: Error){
+
+  s3StreamLogger.on('error', function (err: Error) {
     console.log('error', 'S3 logging error', err);
   });
   return s3StreamLogger;
@@ -145,12 +146,24 @@ interface Log {
   elapsedTime: number;
 }
 
+//@ts-ignore
+const getS3Transports = (): Array<any> =>
+  [
+    new winstonTransports.Stream(options.s3Info),
+    new winstonTransports.Stream(options.s3Error),
+    new winstonTransports.Stream(options.s3Debug),
+  ] as Array<any>;
+
+//@ts-ignore
+const getLocalTransports = (): Array<any> =>
+  [new winstonTransports.Console(options.console)] as Array<any>;
+
+const transports =
+  environment === 'production'
+    ? [...getS3Transports(), ...getLocalTransports()]
+    : getLocalTransports();
+
 module.exports = createLogger({
-  transports: [
-    new transports.Console(options.console),
-    new (transports.Stream)(options.s3Info),
-    new (transports.Stream)(options.s3Error),
-    new (transports.Stream)(options.s3Debug),
-  ],
+  transports,
   exitOnError: false,
 });

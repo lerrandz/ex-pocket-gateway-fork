@@ -9,6 +9,7 @@ const sequence_1 = require("./sequence");
 const account_1 = require("@pokt-network/pocket-js/dist/keybase/models/account");
 const relay_profiler_1 = require("./services/relay-profiler");
 const path = tslib_1.__importStar(require("path"));
+const aat_plans_json_1 = tslib_1.__importDefault(require("./config/aat-plans.json"));
 const logger = require('./services/logger');
 const pocketJS = require('@pokt-network/pocket-js');
 const { Pocket, Configuration, HttpRpcProvider } = pocketJS;
@@ -39,6 +40,7 @@ class PocketGatewayApplication extends boot_1.BootMixin(service_proxy_1.ServiceM
         // Requirements; for Production these are stored in GitHub repo secrets
         //
         // For Dev, you need to pass them in via .env file
+        const environment = process.env.NODE_ENV || 'production';
         const dispatchURL = (_a = process.env.DISPATCH_URL) !== null && _a !== void 0 ? _a : '';
         const fallbackURL = (_b = process.env.FALLBACK_URL) !== null && _b !== void 0 ? _b : '';
         const clientPrivateKey = (_c = process.env.GATEWAY_CLIENT_PRIVATE_KEY) !== null && _c !== void 0 ? _c : '';
@@ -47,6 +49,7 @@ class PocketGatewayApplication extends boot_1.BootMixin(service_proxy_1.ServiceM
         const pocketBlockTime = (_f = parseInt(process.env.POCKET_BLOCK_TIME)) !== null && _f !== void 0 ? _f : 0;
         const relayRetries = (_g = parseInt(process.env.POCKET_RELAY_RETRIES)) !== null && _g !== void 0 ? _g : 0;
         const databaseEncryptionKey = (_h = process.env.DATABASE_ENCRYPTION_KEY) !== null && _h !== void 0 ? _h : '';
+        const aatPlan = process.env.AAT_PLAN || aat_plans_json_1.default.PREMIUM;
         if (!dispatchURL) {
             throw new rest_1.HttpErrors.InternalServerError('DISPATCH_URL required in ENV');
         }
@@ -68,6 +71,9 @@ class PocketGatewayApplication extends boot_1.BootMixin(service_proxy_1.ServiceM
         if (!databaseEncryptionKey) {
             throw new rest_1.HttpErrors.InternalServerError('DATABASE_ENCRYPTION_KEY required in ENV');
         }
+        if (aatPlan !== aat_plans_json_1.default.PREMIUM && !aat_plans_json_1.default.values.includes(aatPlan)) {
+            throw new rest_1.HttpErrors.InternalServerError('Unrecognized AAT Plan');
+        }
         // Load Redis for cache
         const redisEndpoint = process.env.REDIS_ENDPOINT || '';
         const redisPort = process.env.REDIS_PORT || '';
@@ -85,34 +91,41 @@ class PocketGatewayApplication extends boot_1.BootMixin(service_proxy_1.ServiceM
         if (!pgConnection) {
             throw new rest_1.HttpErrors.InternalServerError('PG_CONNECTION required in ENV');
         }
-        if (!pgCertificate) {
+        if (!pgCertificate && environment !== 'development') {
             throw new rest_1.HttpErrors.InternalServerError('PG_CERTIFICATE required in ENV');
         }
         // Pull public certificate from Redis or s3 if not there
         const cachedCertificate = await redis.get('timescaleDBCertificate');
         let publicCertificate;
-        if (!cachedCertificate) {
-            try {
-                const s3Certificate = await got(pgCertificate);
-                publicCertificate = s3Certificate.body;
+        if (environment === 'production') {
+            if (!cachedCertificate) {
+                try {
+                    const s3Certificate = await got(pgCertificate);
+                    publicCertificate = s3Certificate.body;
+                }
+                catch (e) {
+                    throw new rest_1.HttpErrors.InternalServerError('Invalid Certificate');
+                }
+                redis.set('timescaleDBCertificate', publicCertificate, 'EX', 600);
             }
-            catch (e) {
-                throw new rest_1.HttpErrors.InternalServerError('Invalid Certificate');
+            else {
+                publicCertificate = cachedCertificate;
             }
-            redis.set('timescaleDBCertificate', publicCertificate, 'EX', 600);
         }
-        else {
-            publicCertificate = cachedCertificate;
-        }
-        const pgPool = new pg.Pool({
-            connectionString: pgConnection,
-            ssl: {
+        const ssl = environment === 'production'
+            ? {
                 rejectUnauthorized: false,
                 ca: publicCertificate,
-            },
-        });
+            }
+            : false;
+        const pgConfig = {
+            connectionString: pgConnection,
+            ssl,
+        };
+        const pgPool = new pg.Pool(pgConfig);
         this.bind('pgPool').to(pgPool);
         this.bind('databaseEncryptionKey').to(databaseEncryptionKey);
+        this.bind('aatPlan').to(aatPlan);
         // Create the Pocket instance
         const dispatchers = [];
         if (dispatchURL.indexOf(",")) {
