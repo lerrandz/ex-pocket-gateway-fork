@@ -44,5 +44,8 @@ Then spin up the gateway alongside its dependencies.
 $ npm run services:all:up
 ```
 
-#### Missing
-[ ] Nodemon and hot reload for dev purposes.
+This also runs the gateway with mounted volumes pointing to `src` and `dist` and has hot-reloading features, in short, you can change the code and see it in action in your running stack.
+
+#### Run in production mode
+
+_Incoming_
